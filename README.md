@@ -17,6 +17,8 @@ Open <http://127.0.0.1:8080>. Use **Run nine attacks** to generate a report, or 
 
 The demo includes one staging checkout workload, a production-tagged shadow canary, poisoned log text, a synthetic secret marker, simulated remediation, an escalation queue, a session cost ledger, and auditable allow/deny outcomes. No AWS calls occur in local mode.
 
+🌐 **Live CloudFront Demo:** [https://d4u5adhnvilav.cloudfront.net/andoncore/index.html](https://d4u5adhnvilav.cloudfront.net/andoncore/index.html)
+
 > The local dashboard is a loopback development demo, not a production multi-user service. The current UI loads frontend libraries from explicit CDN origins. Review [`AWS_DEPLOYMENT.md`](AWS_DEPLOYMENT.md) before exposing any deployment beyond localhost.
 
 ## UI Preview

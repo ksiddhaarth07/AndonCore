@@ -69,6 +69,7 @@ See [`docs/FAILURES_AND_FIXES.md`](docs/FAILURES_AND_FIXES.md) for full reproduc
 
 ## Links and proof checklist
 
+- Live CloudFront Demo: `https://d4u5adhnvilav.cloudfront.net/andoncore/index.html`
 - Repository: `https://github.com/ksiddhaarth07/AndonCore` (Local repository root: `AndonCore/`)
 - Running agent screenshots: See `docs/screenshots/` (Overview, Incident Room, Rules & Controls)
 - Evidence Artifact: Local adversarial test suite (9/9 checks) verified and reproducible via `python -m andoncore.app`. Opt-in AWS infrastructure is fully defined in `infra/template.yaml` and deployable via `scripts/bootstrap.py`.
