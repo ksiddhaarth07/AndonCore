@@ -1,6 +1,7 @@
 """Build the AndonCore sandbox, seed fixtures, then provision Gateway/Guardrail/Harness."""
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,8 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(command, cwd=ROOT):
+    cmd = list(command)
+    if cmd and shutil.which(cmd[0]):
+        cmd[0] = shutil.which(cmd[0])
     print("+", " ".join(command), flush=True)
-    subprocess.run(command, cwd=str(cwd), check=True)
+    subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
 def main():
@@ -20,6 +24,8 @@ def main():
     parser.add_argument("--profile", default=env("AWS_PROFILE", "") or None)
     parser.add_argument("--region", default=env("AWS_REGION", "us-east-1"))
     parser.add_argument("--stack-name", default=env("STACK_NAME", "andoncore-governance"))
+    parser.add_argument("--s3-bucket", default=env("S3_BUCKET", "scamtrace-918111244587-1794754126"),
+                        help="Existing S3 bucket for SAM deployment artifacts")
     parser.add_argument("--security-alert-email", default=env("SECURITY_ALERT_EMAIL", ""),
                         help="Optional email for policy alerts; the recipient must confirm the SNS subscription")
     args = parser.parse_args()
@@ -35,8 +41,12 @@ def main():
 
     run(["sam", "build", "--template-file", "infra/template.yaml"])
     deploy = ["sam", "deploy", "--template-file", ".aws-sam/build/template.yaml", "--stack-name", args.stack_name,
-              "--resolve-s3", "--capabilities", "CAPABILITY_IAM", "--no-confirm-changeset",
+              "--capabilities", "CAPABILITY_IAM", "--no-confirm-changeset",
               "--no-fail-on-empty-changeset", "--region", args.region]
+    if args.s3_bucket:
+        deploy += ["--s3-bucket", args.s3_bucket, "--s3-prefix", "andoncore"]
+    else:
+        deploy += ["--resolve-s3"]
     if args.security_alert_email:
         deploy += ["--parameter-overrides", f"SecurityAlertEmail={args.security_alert_email}"]
     if args.profile:

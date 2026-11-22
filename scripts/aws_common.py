@@ -4,6 +4,8 @@ from pathlib import Path
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    if not os.environ.get("AWS_PROFILE"):
+        os.environ.pop("AWS_PROFILE", None)
 except ImportError:
     pass
 
