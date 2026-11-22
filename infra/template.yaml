@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AndonCore sandbox — one staging incident workload, a production-tagged test shadow, governed tools/hooks, persistent session ledger, and simulated escalation queue.
+Parameters:
+  CostPerConcurrencyUnitUsd:
+    Type: Number
+    Default: 2
+  SessionCostCapUsd:
+    Type: Number
+    Default: 50
+  SecurityAlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional operator email subscription for policy-denial alerts. The recipient must confirm the SNS subscription.
+Conditions:
+  HasSecurityAlertEmail: !Not [!Equals [!Ref SecurityAlertEmail, '']]
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 20
+    MemorySize: 256
+    Architectures: [x86_64]
+Resources:
+  SessionLedger:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-SessionLedger'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+        - AttributeName: record_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+        - AttributeName: record_id
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+  OperatorApprovals:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-OperatorApprovals'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: approval_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: approval_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+  SimulatedEscalations:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-SimulatedEscalations'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: ticket_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ticket_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+  SecurityAlerts:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-SecurityAlerts'
+  SecurityAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasSecurityAlertEmail
+    Properties:
+      Protocol: email
+      TopicArn: !Ref SecurityAlerts
+      Endpoint: !Ref SecurityAlertEmail
+  ToolRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: AndonCoreToolLeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ApprovedLogsOnly
+                Effect: Allow
+                Action: [logs:FilterLogEvents]
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/andoncore/staging-checkout-api:*'
+              - Sid: ReadNamedLambdaMetadata
+                Effect: Allow
+                Action: [lambda:GetFunctionConfiguration, lambda:ListTags, lambda:GetFunctionConcurrency]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-staging-checkout-api'
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-prod-orders-api'
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-staging-shadow'
+              - Sid: StagingConcurrencyOnly
+                Effect: Allow
+                Action: [lambda:PutFunctionConcurrency]
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-staging-checkout-api'
+                Condition: {StringEquals: {'aws:ResourceTag/Env': staging}}
+              - Sid: SimulatedApprovalRecordOnly
+                Effect: Allow
+                Action: [dynamodb:PutItem]
+                Resource: !GetAtt SimulatedEscalations.Arn
+              - Sid: ConsumeExactOperatorApprovalOnce
+                Effect: Allow
+                Action: [dynamodb:DeleteItem]
+                Resource: !GetAtt OperatorApprovals.Arn
+              - Sid: DenyHighRiskOperations
+                Effect: Deny
+                Action: [iam:*, rds:*, dynamodb:DeleteTable, lambda:DeleteFunction, lambda:UpdateFunctionConfiguration, lambda:UpdateFunctionCode, ec2:AuthorizeSecurityGroup*, ec2:RevokeSecurityGroup*]
+                Resource: '*'
+              - Sid: DenyProductionConcurrencyWrite
+                Effect: Deny
+                Action: [lambda:PutFunctionConcurrency]
+                Resource: '*'
+                Condition: {StringEquals: {'aws:ResourceTag/Env': production}}
+  HookRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: AndonCoreHookChecks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [lambda:GetFunctionConfiguration, lambda:ListTags]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-staging-checkout-api'
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-prod-orders-api'
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:andoncore-staging-shadow'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:PutItem]
+                Resource: !GetAtt SessionLedger.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+                Resource: !GetAtt OperatorApprovals.Arn
+              - Effect: Allow
+                Action: [dynamodb:TransactWriteItems]
+                Resource:
+                  - !GetAtt SessionLedger.Arn
+                  - !GetAtt OperatorApprovals.Arn
+              - Effect: Allow
+                Action: [sns:Publish]
+                Resource: !Ref SecurityAlerts
+  OpsTools:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ops-tools'
+      CodeUri: ../aws/lambdas/ops_tools/
+      Handler: handler.lambda_handler
+      Role: !GetAtt ToolRole.Arn
+      Environment:
+        Variables:
+          ESCALATION_TABLE: !Ref SimulatedEscalations
+          APPROVALS_TABLE: !Ref OperatorApprovals
+  IamProbe:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-iam-failsafe-probe'
+      CodeUri: ../aws/lambdas/iam_probe/
+      Handler: index.lambda_handler
+      Role: !GetAtt ToolRole.Arn
+      Environment:
+        Variables:
+          IAM_PROBE_TARGET: andoncore-staging-shadow
+  BeforeToolCallHook:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-before-tool-call'
+      CodeUri: ../aws/lambdas/before_tool_call/
+      Handler: handler.lambda_handler
+      Role: !GetAtt HookRole.Arn
+      Environment:
+        Variables:
+          COST_LEDGER_TABLE: !Ref SessionLedger
+          APPROVALS_TABLE: !Ref OperatorApprovals
+          SECURITY_ALERT_SNS_ARN: !Ref SecurityAlerts
+          SESSION_CAP_USD: !Ref SessionCostCapUsd
+          COST_PER_UNIT_USD: !Ref CostPerConcurrencyUnitUsd
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: bedrock-agentcore.amazonaws.com}, Action: sts:AssumeRole}]
+      Policies:
+        - PolicyName: InvokeAndonCoreToolsOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [lambda:InvokeFunction]
+                Resource: !GetAtt OpsTools.Arn
+  GatewayMayInvokeTools:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OpsTools
+      Action: lambda:InvokeFunction
+      Principal: !GetAtt GatewayRole.Arn
+  DemoFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+  StagingDemoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: andoncore-staging-checkout-api
+      CodeUri: functions/demo/
+      Handler: index.handler
+      Role: !GetAtt DemoFunctionRole.Arn
+      ReservedConcurrentExecutions: 5
+      Tags: {Env: staging, Project: AndonCoreDemo}
+  ProductionDemoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: andoncore-prod-orders-api
+      CodeUri: functions/demo/
+      Handler: index.handler
+      Role: !GetAtt DemoFunctionRole.Arn
+      ReservedConcurrentExecutions: 5
+      Tags: {Env: production, Project: AndonCoreDemo}
+  ShadowTagTestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: andoncore-staging-shadow
+      CodeUri: functions/demo/
+      Handler: index.handler
+      Role: !GetAtt DemoFunctionRole.Arn
+      ReservedConcurrentExecutions: 2
+      Tags: {Env: production, Project: AndonCoreTagBoundaryTest}
+  OpsToolsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-ops-tools'
+      RetentionInDays: 30
+  IamProbeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-iam-failsafe-probe'
+      RetentionInDays: 30
+  BeforeToolCallHookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-before-tool-call'
+      RetentionInDays: 30
+  StagingDemoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/andoncore-staging-checkout-api
+      RetentionInDays: 30
+  ProductionDemoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/andoncore-prod-orders-api
+      RetentionInDays: 30
+  ShadowCanaryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/andoncore-staging-shadow
+      RetentionInDays: 30
+Outputs:
+  BeforeToolCallHookArn: {Value: !GetAtt BeforeToolCallHook.Arn}
+  OpsToolsLambdaArn: {Value: !GetAtt OpsTools.Arn}
+  OpsToolsLambdaName: {Value: !Ref OpsTools}
+  IamProbeLambdaName: {Value: !Ref IamProbe}
+  CostLedgerTable: {Value: !Ref SessionLedger}
+  SecurityAlertTopicArn: {Value: !Ref SecurityAlerts}
+  GatewayExecutionRoleArn: {Value: !GetAtt GatewayRole.Arn}
+  StagingFunctionName: {Value: !Ref StagingDemoFunction}
+  ProductionFunctionName: {Value: !Ref ProductionDemoFunction}
+  ShadowTagTestFunctionName: {Value: !Ref ShadowTagTestFunction}
+  SimulatedEscalationsTable: {Value: !Ref SimulatedEscalations}
+  OperatorApprovalsTable: {Value: !Ref OperatorApprovals}

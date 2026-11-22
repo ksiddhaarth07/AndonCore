@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid":"AllowApprovedLogRead","Effect":"Allow","Action":["logs:FilterLogEvents"],"Resource":"arn:aws:logs:*:*:log-group:/andoncore/staging-checkout-api:*"},
+    {"Sid":"AllowLambdaReadForNamedTargets","Effect":"Allow","Action":["lambda:GetFunctionConfiguration","lambda:ListTags","lambda:GetFunctionConcurrency"],"Resource":["arn:aws:lambda:*:*:function:andoncore-staging-checkout-api","arn:aws:lambda:*:*:function:andoncore-prod-orders-api","arn:aws:lambda:*:*:function:andoncore-staging-shadow"]},
+    {"Sid":"AllowStagingConcurrencyOnly","Effect":"Allow","Action":["lambda:PutFunctionConcurrency"],"Resource":"arn:aws:lambda:*:*:function:andoncore-staging-checkout-api","Condition":{"StringEquals":{"aws:ResourceTag/Env":"staging"}}},
+    {"Sid":"AllowSimulatedEscalationOnly","Effect":"Allow","Action":["dynamodb:PutItem"],"Resource":"arn:aws:dynamodb:*:*:table/AndonCoreSimulatedEscalations"},
+    {"Sid":"ExplicitDenyDangerousOperations","Effect":"Deny","Action":["iam:*","rds:*","dynamodb:DeleteTable","lambda:DeleteFunction","lambda:UpdateFunctionConfiguration","lambda:UpdateFunctionCode","ec2:AuthorizeSecurityGroup*","ec2:RevokeSecurityGroup*"],"Resource":"*"},
+    {"Sid":"ExplicitDenyProductionConcurrencyMutation","Effect":"Deny","Action":["lambda:PutFunctionConcurrency"],"Resource":"*","Condition":{"StringEquals":{"aws:ResourceTag/Env":"production"}}}
+  ]
+}

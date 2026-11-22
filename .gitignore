@@ -1,0 +1,15 @@
+.env
+.venv/
+work/
+node_modules/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.aws-sam/
+*.msi
+chrome-render-profile*/
+chrome-render-profi*/
+data/audit.jsonl
+data/live_stress_test_report.json
+data/before_fix_report.json
+data/last_live_*.json
